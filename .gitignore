@@ -1,0 +1,29 @@
+# Node
+node_modules/
+
+# Frontend node modules
+call-analyzer-frontend/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Env
+.env
+.env.local
+
+# Uploads and user data
+uploads/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Build outputs
+dist/
+build/
+
+# Database
+*.sqlite3
+*.db
