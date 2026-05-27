@@ -13,7 +13,14 @@ app.use(express.json());
 app.use(cors());
 
 // ─── MONGODB SETUP ──────────────────────────────────────────────
-mongoose.connect('mongodb://127.0.0.1:27017/admissions_ai')
+const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+    console.error('❌ Missing required environment variable: MONGODB_URI');
+    process.exit(1);
+}
+
+mongoose.connect(MONGODB_URI)
     .then(() => console.log('📦 Connected to MongoDB successfully!'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
 

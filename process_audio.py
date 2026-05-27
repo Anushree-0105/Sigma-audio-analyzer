@@ -1,24 +1,36 @@
+import os
 import sys
 import json
 import pymongo
 from bson.objectid import ObjectId
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Force Windows UTF-8 output
 if sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
 
 # ─── CONFIGURE GEMINI ───
-API_KEY = "AIzaSyAl0C7HELlRZB3AlaUBlL-x7zJOsyTatWQ"  # Paste your actual key here
+API_KEY = os.getenv('GEMINI_API_KEY')
+MONGODB_URI = os.getenv('MONGODB_URI')
+MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'analyzer')
+
+if not API_KEY:
+    raise SystemExit('Missing required environment variable: GEMINI_API_KEY')
+if not MONGODB_URI:
+    raise SystemExit('Missing required environment variable: MONGODB_URI')
+
 client = genai.Client(api_key=API_KEY)
 
 def analyze_call(record_id, audio_file_path):
     print(f"[START] AI Lead Extraction for Record ID: {record_id}")
     
     # Connect to MongoDB
-    mongo_client = pymongo.MongoClient('mongodb://127.0.0.1:27017/admissions_ai')
-    db = mongo_client.get_database()
+    mongo_client = pymongo.MongoClient(MONGODB_URI)
+    db = mongo_client[MONGO_DB_NAME]
     calls_collection = db['callrecords']
 
     try:
