@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import pymongo
+import urllib.parse
 from bson.objectid import ObjectId
 from google import genai
 from google.genai import types
@@ -16,7 +17,6 @@ if sys.stdout.encoding.lower() != 'utf-8':
 # ─── CONFIGURE GEMINI ───
 API_KEY = os.getenv('GEMINI_API_KEY')
 MONGODB_URI = os.getenv('MONGODB_URI')
-MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'analyzer')
 
 if not API_KEY:
     raise SystemExit('Missing required environment variable: GEMINI_API_KEY')
@@ -28,18 +28,26 @@ client = genai.Client(api_key=API_KEY)
 def analyze_call(record_id, audio_file_path):
     print(f"[START] AI Lead Extraction for Record ID: {record_id}")
     
-    # Connect to MongoDB
-    mongo_client = pymongo.MongoClient(MONGODB_URI)
-    db = mongo_client[MONGO_DB_NAME]
-    calls_collection = db['callrecords']
-
     try:
+        # Extract the correct DB name from the URI
+        parsed_uri = urllib.parse.urlparse(MONGODB_URI)
+        db_name = parsed_uri.path.lstrip('/')
+        if not db_name:
+            db_name = 'test' 
+            
+        mongo_client = pymongo.MongoClient(MONGODB_URI)
+        db = mongo_client[db_name]
+        calls_collection = db['callrecords']
+        print(f"[INFO] Connected to MongoDB database: {db_name}")
+
         print("[INFO] Uploading audio directly to Gemini...")
         audio_file = client.files.upload(file=audio_file_path)
         
         print("[INFO] Extracting structured student data...")
         prompt = "Analyze this admission call (Hindi/Gujarati/English). Extract lead details. Predict college visit."
         
+        # 👈 FIXED: We must use a model that actually exists! 
+        # Using gemini-2.0-flash as it is highly stable and avoids the 503 traffic jams of 2.5
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[audio_file, prompt],
@@ -60,7 +68,13 @@ def analyze_call(record_id, audio_file_path):
             )
         )
 
-        data = json.loads(response.text)
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"):
+            raw_text = raw_text[7:]
+        if raw_text.endswith("```"):
+            raw_text = raw_text[:-3]
+            
+        data = json.loads(raw_text.strip())
         
         # --- STAR LOGIC ---
         check_fields = [
@@ -78,8 +92,7 @@ def analyze_call(record_id, audio_file_path):
 
         print(f"[SUCCESS] Extracted Lead: {data.get('name', 'Unknown')} | Score: {stars}")
 
-        # Update MongoDB with the new Student Data
-        calls_collection.update_one(
+        update_result = calls_collection.update_one(
             {"_id": ObjectId(record_id)},
             {"$set": {
                 "isProcessedByAI": True,
@@ -98,14 +111,41 @@ def analyze_call(record_id, audio_file_path):
                 "starRating": stars
             }}
         )
-        print("[DONE] MongoDB Record Updated Successfully!")
+        if update_result.modified_count > 0:
+            print(f"[DONE] MongoDB Record ({record_id}) Updated Successfully!")
 
+    except json.JSONDecodeError as e:
+        error_msg = "Failed to parse JSON from AI."
+        print(f"[ERROR] {error_msg} Raw output: {response.text}")
+        if 'calls_collection' in locals():
+            calls_collection.update_one(
+                {"_id": ObjectId(record_id)},
+                {"$set": {"studentName": "Error", "visitPrediction": "Failed", "remark": error_msg, "starRating": "❌"}}
+            )
+            
     except Exception as e:
-        print(f"[ERROR] processing failed: {e}")
+        error_msg = str(e)
+        print(f"[ERROR] processing failed: {error_msg}")
+        if 'calls_collection' in locals():
+            calls_collection.update_one(
+                {"_id": ObjectId(record_id)},
+                {"$set": {
+                    "isProcessedByAI": True,
+                    "studentName": "API Error",
+                    "counselorName": "N/A",
+                    "visitPrediction": "Failed",
+                    "remark": f"Failed: {error_msg[:150]}",
+                    "starRating": "❌"
+                }}
+            )
+            print("[INFO] Updated MongoDB with error status.")
+            
     finally:
-        mongo_client.close()
+        if 'mongo_client' in locals():
+            mongo_client.close()
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
+        print("[ERROR] Missing arguments.")
         sys.exit(1)
     analyze_call(sys.argv[1], sys.argv[2])

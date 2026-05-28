@@ -7,14 +7,40 @@ const { spawn } = require('child_process');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const jwt = require('jsonwebtoken'); // 👈 Added JWT
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
+// ─── SECURITY & AUTHENTICATION ──────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || 'sigma_super_secret_key_2026';
+
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+    // Hardcoded Admin for Sigma University
+    if (username === 'admin' && password === 'sigma123') {
+        const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '8h' });
+        res.status(200).json({ token });
+    } else {
+        res.status(401).json({ error: 'Invalid credentials' });
+    }
+});
+
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Access Denied' });
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ error: 'Invalid Token' });
+        req.user = user;
+        next();
+    });
+};
+
 // ─── MONGODB SETUP ──────────────────────────────────────────────
 const MONGODB_URI = process.env.MONGODB_URI;
-
 if (!MONGODB_URI) {
     console.error('❌ Missing required environment variable: MONGODB_URI');
     process.exit(1);
@@ -24,7 +50,6 @@ mongoose.connect(MONGODB_URI)
     .then(() => console.log('📦 Connected to MongoDB successfully!'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// The schema is now set to { strict: false } so it accepts all the new Gemini fields!
 const callRecordSchema = new mongoose.Schema({
     callId: { type: String, required: true, unique: true },
     staffName: String,
@@ -34,12 +59,11 @@ const callRecordSchema = new mongoose.Schema({
     durationSeconds: Number,
     recordingUrl: String,
     localFilePath: String,
-    // AI fields will be dynamically added here by Python
 }, { strict: false, timestamps: true });
 
 const CallRecord = mongoose.model('CallRecord', callRecordSchema);
 
-// ─── FILE UPLOAD SETUP (MULTER) ─────────────────────────────────
+// ─── FILE UPLOAD & SERVING SETUP ────────────────────────────────
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
@@ -51,12 +75,16 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+// 👈 Expose the uploads folder so React can play the audio
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ─── ENDPOINT 1: REACT FETCH DATA ───────────────────────────────
-// React calls this every 4 seconds to get the latest DB records
-app.get('/api/calls', async (req, res) => {
+
+// ─── PROTECTED ENDPOINTS ────────────────────────────────────────
+
+// 1. Fetch Data
+app.get('/api/calls', authenticateToken, async (req, res) => {
     try {
-        const calls = await CallRecord.find().sort({ createdAt: -1 }); // Newest first
+        const calls = await CallRecord.find().sort({ createdAt: -1 }); 
         res.status(200).json(calls);
     } catch (error) {
         console.error("❌ Error fetching calls:", error);
@@ -64,16 +92,12 @@ app.get('/api/calls', async (req, res) => {
     }
 });
 
-
-// ─── ENDPOINT 2: MANUAL AUDIO UPLOAD ────────────────────────────
-// React sends .wav/.mp3 files here
-app.post('/api/upload-audio', upload.single('audioFile'), async (req, res) => {
+// 2. Manual Upload
+app.post('/api/upload-audio', authenticateToken, upload.single('audioFile'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).send({ error: "No file uploaded" });
-
         console.log(`\n📁 File received: ${req.file.filename}`);
 
-        // 1. Create a "Processing" record in MongoDB
         const newRecord = new CallRecord({
             callId: "MANUAL_" + Date.now(),
             staffName: req.body.staffName || "Manual Upload",
@@ -87,16 +111,19 @@ app.post('/api/upload-audio', upload.single('audioFile'), async (req, res) => {
         });
 
         const savedRecord = await newRecord.save();
-
-        // 2. Respond to React immediately so the loader stops spinning
         res.status(200).send({ message: "File uploaded successfully!", recordId: savedRecord._id });
 
-        // 3. Trigger Python Gemini AI in the background
         console.log(`⚙️ Starting Python AI on uploaded file: ${req.file.path}`);
-        const pythonProcess = spawn('python', ['process_audio.py', savedRecord._id.toString(), req.file.path]);
+        // 👈 Added -u flag for unbuffered output
+        const pythonProcess = spawn('python', ['-u', 'process_audio.py', savedRecord._id.toString(), req.file.path]);
 
         pythonProcess.stdout.on('data', (data) => console.log(`[PYTHON]: ${data.toString().trim()}`));
         pythonProcess.stderr.on('data', (data) => console.error(`[PYTHON ERROR]: ${data.toString().trim()}`));
+        
+        pythonProcess.on('close', (code) => {
+            if (code !== 0) console.log(`❌ Python script crashed with exit code ${code}`);
+            else console.log(`✅ Python script completed successfully.`);
+        });
         
     } catch (error) {
         console.error("❌ Upload error:", error);
@@ -104,55 +131,23 @@ app.post('/api/upload-audio', upload.single('audioFile'), async (req, res) => {
     }
 });
 
-
-// ─── ENDPOINT 3: AUTOMATED WEBHOOK (For later) ──────────────────
-// Telecom server sends JSON data here when a live call ends
-app.post('/api/webhooks/call-ended', async (req, res) => {
+// 3. Delete Record
+app.delete('/api/calls/:id', authenticateToken, async (req, res) => {
     try {
-        const callData = req.body;
-        console.log("\n🔔 WEBHOOK RECEIVED! Processing call:", callData.callId);
-
-        const newRecord = new CallRecord({
-            callId: callData.callId,
-            staffName: callData.staffName || "Unknown Telecommunicator",
-            staffExtension: callData.extension,
-            callerNumber: callData.callerNumber,
-            callType: callData.callType,
-            durationSeconds: callData.duration,
-            recordingUrl: callData.recording_url,
-            studentName: "Processing...",
-            remark: "AI is analyzing the webhook audio..."
-        });
-
-        const savedRecord = await newRecord.save();
-        console.log("✅ Successfully saved to MongoDB:", savedRecord._id);
-
-        res.status(200).send({ message: "Webhook received and saved", recordId: savedRecord._id });
-
-        // For webhooks, we would normally download the audio from the recordingUrl first.
-        // For now, we point it to a dummy file to keep the pipeline intact.
-        const audioFilePath = './dummy.mp3'; 
+        const deletedRecord = await CallRecord.findOneAndDelete({ callId: req.params.id });
+        if (!deletedRecord) return res.status(404).send({ error: "Record not found" });
         
-        console.log(`⚙️ Starting Python AI for Webhook ID: ${savedRecord._id}`);
-        const pythonProcess = spawn('python', ['process_audio.py', savedRecord._id.toString(), audioFilePath]);
-
-        pythonProcess.stdout.on('data', (data) => console.log(`[PYTHON]: ${data.toString().trim()}`));
-        pythonProcess.stderr.on('data', (data) => console.error(`[PYTHON ERROR]: ${data.toString().trim()}`));
-
+        console.log(`🗑️ Deleted record: ${req.params.id}`);
+        res.status(200).send({ message: "Record deleted successfully!" });
     } catch (error) {
-        if (error.code === 11000) {
-            console.log("⚠️ Duplicate call Webhook received. Ignoring.");
-            return res.status(200).send({ message: "Call already logged." });
-        }
-        console.error("❌ Error processing webhook:", error.message);
-        res.status(500).send({ error: "Internal Server Error" });
+        console.error("❌ Error deleting record:", error);
+        res.status(500).send({ error: "Failed to delete record" });
     }
 });
-
 
 // ─── START SERVER ───────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`\n🚀 Server running on http://localhost:${PORT}`);
-    console.log(`⏳ Waiting for files or webhooks...\n`);
+    console.log(`⏳ Waiting for files...\n`);
 });
