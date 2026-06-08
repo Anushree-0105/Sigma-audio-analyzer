@@ -40,14 +40,13 @@ def analyze_call(record_id, audio_file_path):
         calls_collection = db['callrecords']
         print(f"[INFO] Connected to MongoDB database: {db_name}")
 
-        print("[INFO] Uploading audio directly to Gemini...")
-        audio_file = client.files.upload(file=audio_file_path)
-        
         print("[INFO] Extracting structured student data...")
-        prompt = "Analyze this admission call (Hindi/Gujarati/English). Extract lead details. Predict college visit."
-        
-        # 👈 FIXED: We must use a model that actually exists! 
-        # Using gemini-2.0-flash as it is highly stable and avoids the 503 traffic jams of 2.5
+        prompt = "Analyze this admission call (Hindi/Gujarati/English). Extract lead details. Predict college visit. Output must follow the provided JSON schema."
+
+        # Single-shot Gemini call (no retry sleeps). If Gemini is temporarily unavailable,
+        # the request will fail and the DB will be marked with an error message.
+        print("[INFO] Calling Gemini...")
+        audio_file = client.files.upload(file=audio_file_path)
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[audio_file, prompt],
@@ -67,6 +66,8 @@ def analyze_call(record_id, audio_file_path):
                 }
             )
         )
+
+
 
         raw_text = response.text.strip()
         if raw_text.startswith("```json"):
@@ -92,10 +93,21 @@ def analyze_call(record_id, audio_file_path):
 
         print(f"[SUCCESS] Extracted Lead: {data.get('name', 'Unknown')} | Score: {stars}")
 
+        # record_id can be either a MongoDB _id (24 hex) or a custom string (e.g. callId)
+        oid = None
+        try:
+            oid = ObjectId(record_id)
+        except Exception:
+            oid = None
+
+        query = {"_id": oid} if oid else {"callId": record_id}
+
         update_result = calls_collection.update_one(
-            {"_id": ObjectId(record_id)},
+            query,
             {"$set": {
+
                 "isProcessedByAI": True,
+
                 "studentName": data.get("name", "Unknown"),
                 "counselorName": data.get("counselor", "Unknown"),
                 "city": data.get("city", "N/A"),

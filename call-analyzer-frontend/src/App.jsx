@@ -40,13 +40,17 @@ export default function App() {
     async function fetchCalls() {
       if (!token) return; 
       try {
-        const response = await axios.get('http://localhost:5000/api/calls', {
+        // 👈 FIX 1: Added a timestamp to the URL! 
+        // This forces the browser to fetch fresh data from MongoDB instead of using old cached data.
+        const timestamp = new Date().getTime();
+        const response = await axios.get(`http://localhost:5000/api/calls?t=${timestamp}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
         const formattedData = response.data.map(call => ({
-          id: call.callId,
-          staff: call.counselorName || call.staffName,
+          // 👈 FIX 2: Added `call._id` so React perfectly matches the MongoDB ID
+          id: call._id || call.callId || Math.random().toString(),
+          staff: call.counselorName || call.staffName || "Unknown",
           phone: call.callerNumber || "Unknown",
           type: call.callType || "Inbound",
           studentName: call.studentName || "Processing...",
@@ -55,7 +59,10 @@ export default function App() {
           visitPrediction: call.visitPrediction || "Processing...",
           remark: call.remark || "N/A",
           starRating: call.starRating || "⏳",
-          outcome: call.outcome || "Pending",
+          
+          // 👈 FIX 3: Linked 'outcome' to 'visitPrediction' so the table updates correctly!
+          outcome: call.outcome || call.visitPrediction || "Pending",
+          
           timestamp: call.createdAt,
           dateStr: call.createdAt ? new Date(call.createdAt).toISOString().slice(0, 10) : "Unknown",
           localFilePath: call.localFilePath 

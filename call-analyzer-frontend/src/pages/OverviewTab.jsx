@@ -8,7 +8,7 @@ export default function OverviewTab({ dbRecords, C }) {
   const [isUploading, setIsUploading] = useState(false);
   const [trendMode, setTrendMode] = useState("Weekly");
 
-  const handleUpload = async () => {
+const handleUpload = async () => {
     if (!selectedFile) return alert("Please select an audio file!");
     setIsUploading(true);
     const formData = new FormData();
@@ -16,7 +16,6 @@ export default function OverviewTab({ dbRecords, C }) {
     formData.append('staffName', 'Demo Staff');
 
     try {
-      // 👈 FIXED: Added the Authorization header so the secure backend accepts the file
       await axios.post('http://localhost:5000/api/upload-audio', formData, {
         headers: { 
           'Content-Type': 'multipart/form-data',
@@ -24,9 +23,26 @@ export default function OverviewTab({ dbRecords, C }) {
         }
       });
       setSelectedFile(null);
+      alert("✅ Audio processed successfully!"); // Optional: Add a success alert!
+      
     } catch (error) {
       console.error("Upload error details:", error);
-      alert("Upload failed. Make sure you are logged in and Node is running.");
+      
+      // --- THE GRACEFUL FAILURE FIX ---
+      // If the backend throws a 500-level error, it means Python hit the Google 503 traffic jam.
+      if (error.response && error.response.status >= 500) {
+        alert("⚠️ AI System Busy: The Google AI servers are currently experiencing peak global traffic and cannot process heavy audio files right now. Please try again during off-peak hours.");
+      } 
+      // If it's a 429 error, you hit the free tier quota limit.
+      else if (error.response && error.response.status === 429) {
+         alert("⚠️ Quota Exceeded: The daily free-tier limit for the AI API has been reached. Please switch the API key or try again tomorrow.");
+      } 
+      // Fallback for general network errors
+      else {
+        alert("❌ Connection Error: Could not reach the local Node.js server. Please ensure the backend is running.");
+      }
+      // ---------------------------------
+      
     } finally {
       setIsUploading(false);
     }
@@ -159,7 +175,7 @@ export default function OverviewTab({ dbRecords, C }) {
         <div style={{ background: C.panel, borderRadius: 12, padding: 24, border: `1px solid ${C.border}`, boxShadow: C.shadow, display: "flex", flexDirection: "column" }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.text }}>Recent Calls</div>
           <div style={{ fontSize: 13, color: C.textDim, marginBottom: 16 }}>Live feed</div>
-          <div style={{ overflowY: "auto", flex: 1, paddingRight: 4, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ overflowY: "auto", maxHeight: 320, flex: 1, paddingRight: 4, display: "flex", flexDirection: "column", gap: 12 }}>
             {dbRecords.map((r, i) => {
               const initials = (r.staff || "U").split(" ").map(n=>n[0]).join("").substring(0,2).toUpperCase();
               const isInbound = r.type === "Inbound";
